@@ -3,7 +3,6 @@ import setuptools
 setuptools.setup(
     name="lab_3",
     version='0.0.1',
-    packages=setuptools.find_packages(exclude=['*_notebooks', 'qa', '*-dev.sh']),
     install_requires=[
         'opencv-python',
         'Pillow',
