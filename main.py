@@ -2,7 +2,7 @@ import os
 from dataclasses import dataclass
 from typing import Tuple, Iterable, Any, Dict, List
 
-import cv2  # type: ignore
+import cv2
 import numpy as np
 import tensorflow as tf
 import tensorflow.compat.v1 as tf_v1
@@ -31,37 +31,18 @@ COCO_CLASS_NAMES = [
     'sink', 'refrigerator', 'book', 'clock', 'vase',
     'scissors', 'teddy bear', 'hair drier', 'toothbrush']
 
-INPUT_IMAGE = './index.jpg'
-STORAGE_FROZEN_GRAPHS_DIR = './'
+INPUT_IMAGE = './YHf7MEUm-O.jpg'
+# STORAGE_FROZEN_GRAPHS_DIR = './'
 TensorName = str
 
-
 @dataclass
-class RunnerDescriptor:
+class Descriptor:
     graph_path: str
     input_tensor_names: Tuple[TensorName, ...]
     output_tensor_names: Tuple[TensorName, ...]
 
 
-@dataclass
-class MetricDescriptor:
-    name: str
-    accuracy: float
-    runner_descriptor: RunnerDescriptor
-
-
-def wrap_frozen_graph(graph_def: tf_v1.GraphDef, inputs: Iterable[str], outputs: Iterable[str]) -> Any:
-    def imports_graph_def() -> Any:
-        tf_v1.import_graph_def(graph_def, name="")
-
-    wrapped_import = tf_v1.wrap_function(imports_graph_def, [])
-    import_graph = wrapped_import.graph
-
-    return wrapped_import.prune(
-        tf.nest.map_structure(import_graph.as_graph_element, inputs),
-        tf.nest.map_structure(import_graph.as_graph_element, outputs))
-
-class Yolo2BasePostProc:
+class Yolo2Post:
     def __init__(self, anchors: np.ndarray,
                  num_classes: int,
                  image_shape: Tuple[int, int],
@@ -89,10 +70,9 @@ class Yolo2BasePostProc:
             box_class_probs: tf.Tensor,
             confidence_threshold: float = .5
     ) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
-        """Filter boxes by confidence threshold."""
         box_scores = box_confidence * box_class_probs
-        box_classes = tf.argmax(box_scores, axis=-1)  # best score index
-        box_class_scores = tf.math.reduce_max(box_scores, axis=-1)  # best score
+        box_classes = tf.argmax(box_scores, axis=-1)
+        box_class_scores = tf.math.reduce_max(box_scores, axis=-1)
         prediction_mask = box_class_scores >= confidence_threshold
         boxes = tf.boolean_mask(boxes, prediction_mask)
         scores = tf.boolean_mask(box_class_scores, prediction_mask)
@@ -117,12 +97,10 @@ class Yolo2BasePostProc:
             max_boxes: int = 20,
             iou_threshold: float = 0.5,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Non max suppression for boxes and scores."""
         nms_indices = tf.image.non_max_suppression(boxes, scores, max_boxes, iou_threshold)
         boxes = tf.gather(boxes, nms_indices)
         scores = tf.gather(scores, nms_indices)
         classes = tf.gather(classes, nms_indices)
-
         scores = tf.reshape(scores, (-1, 1)).numpy()
         classes = tf.reshape(classes, (-1, 1)).numpy()
         boxes = boxes.numpy()
@@ -147,18 +125,14 @@ class Yolo2BasePostProc:
         dims = tf.cast(tf.shape(result)[1:3], dtype=tf.float32)
         dims = tf.reshape(dims, (1, 1, 1, 1, 2))
 
-        # pred_xy and pred_wh shape (m, fmap_size, fmap_size, Anchors, 2)
         pred_xy = tf.sigmoid(result[:, :, :, :, 0:2])
         pred_xy = (pred_xy + coords)
         pred_xy = pred_xy / dims
         pred_wh = tf.exp(result[:, :, :, :, 2:4])
         pred_wh = (pred_wh * anchors)
         pred_wh = pred_wh / dims
-        # pred_confidence
         box_conf = tf.sigmoid(result[:, :, :, :, 4:5])
-        # pred_class
         box_class_prob = tf.math.softmax(result[:, :, :, :, 5:])
-        # Reshape
         box_xy = pred_xy[0, ...]
         box_wh = pred_wh[0, ...]
         box_confidence = box_conf[0, ...]
@@ -196,17 +170,29 @@ class Yolo2BasePostProc:
         return np.hstack((classes, boxes, scores)).astype('float32')
 
 
-class TFRunner:
-    def __init__(self, descriptor: RunnerDescriptor):
+class Yolo2:
+    def __init__(self, descriptor: Descriptor):
         self.descriptor = descriptor
-        self.runner_descriptor = descriptor
+        # self.runner_descriptor = descriptor
         with tf.io.gfile.GFile(descriptor.graph_path, "rb") as file:
             graph_def = tf.compat.v1.GraphDef()
             _ = graph_def.ParseFromString(file.read())
 
-        self.frozen_graph_wrapper = wrap_frozen_graph(graph_def=graph_def,
-                                                      inputs=descriptor.input_tensor_names,
-                                                      outputs=descriptor.output_tensor_names)
+        self.frozen_graph_wrapper = Yolo2.w_fro_g(graph_def=graph_def,
+                                                  inputs=descriptor.input_tensor_names,
+                                                  outputs=descriptor.output_tensor_names)
+
+    @staticmethod
+    def w_fro_g(graph_def: tf_v1.GraphDef, inputs: Iterable[str], outputs: Iterable[str]) -> Any:
+        def imports_graph_def() -> Any:
+            tf_v1.import_graph_def(graph_def, name="")
+
+        wrapped_import = tf_v1.wrap_function(imports_graph_def, [])
+        import_graph = wrapped_import.graph
+
+        return wrapped_import.prune(
+            tf.nest.map_structure(import_graph.as_graph_element, inputs),
+            tf.nest.map_structure(import_graph.as_graph_element, outputs))
 
     def __call__(self, input_data: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         return self._run_inference(input_data)
@@ -227,15 +213,9 @@ class TFRunner:
             outputs_dict.update(node_dict)
         return outputs_dict
 
-
-class Yolo2:
-    def __init__(self, descriptor: MetricDescriptor):
-        self._descriptor = descriptor
-        # super().__init__(descriptor, dataset_path, label_file_path)
-
     @property
-    def runner_descriptor(self) -> RunnerDescriptor:
-        return self._descriptor.runner_descriptor
+    def runner_descriptor(self) -> Descriptor:
+        return self.descriptor
 
     @staticmethod
     def preprocess_yolo_common(data: Iterable[Image.Image], output_size: Tuple[int, int]) -> np.ndarray:
@@ -274,7 +254,7 @@ class Yolo2:
             prediction = inference_output[out_name]
             prediction = prediction[idx:idx + 1]
 
-            yolo = Yolo2BasePostProc(
+            yolo = Yolo2Post(
                 anchors=np.array([
                     (0.57273, 0.677385), (1.87446, 2.06253), (3.33843, 5.47434),
                     (7.88282, 3.52778), (9.77052, 9.16828),
@@ -296,18 +276,6 @@ class Yolo2:
 
         return predictions
 
-def get_img_sizes(images: Iterable[Image.Image]) -> List[Tuple[int, int]]:
-    sizes = []
-    for image in images:
-        sizes.append(image.size)
-    return sizes
-
-def get_spaced_colors(number: int) -> List[Tuple[int, int, int]]:
-    """Get spaced colors for drawing."""
-    max_value = 255 ** 3
-    interval = int(max_value / number)
-    colors = [hex(ind)[2:].zfill(6) for ind in range(0, max_value, interval)]
-    return [(int(color[:2], 16), int(color[2:4], 16), int(color[4:], 16)) for color in colors]
 
 def draw_boxes(
     img: Image,
@@ -320,7 +288,11 @@ def draw_boxes(
     draw = ImageDraw.Draw(img)
     font = ImageFont.truetype(font=font,
                               size=(img.size[0] + img.size[1]) // 100)
-    colors = get_spaced_colors(len(class_names))
+    # colors = get_spaced_colors(len(class_names))
+    max_value = 255 ** 3
+    interval = int(max_value / len(class_names))
+    colors_ = [hex(ind)[2:].zfill(6) for ind in range(0, max_value, interval)]
+    colors = [(int(color[:2], 16), int(color[2:4], 16), int(color[4:], 16)) for color in colors_]
     if isinstance(boxes, dict):
         for cls in list(boxes.keys()):
             box_ = boxes[cls]
@@ -345,72 +317,59 @@ def draw_boxes(
                           font=font)
     elif isinstance(boxes, np.ndarray):
         confidence = 0
-        for cls in range(boxes.shape[0]):
-            box = boxes[cls]
-            color = colors[int(box[0])]
-            class_ = int(box[0])
-            if box.shape[0] == 6:
-                xy_coords, confidence = box[1:5], box[5]
-            else:
-                xy_coords = box[1:5]
-            xy_coords = np.asarray([xy_coords[0], xy_coords[1], xy_coords[2], xy_coords[3]])
-            x0_coord, y0_coord = xy_coords[0], xy_coords[1]
-            thickness = (img.size[0] + img.size[1]) // 200
-            for tick in np.linspace(0, 1, thickness):
-                xy_coords[0], xy_coords[1] = xy_coords[0] + tick, xy_coords[1] + tick
-                xy_coords[2], xy_coords[3] = xy_coords[2] - tick, xy_coords[3] - tick
-                draw.rectangle([xy_coords[0], xy_coords[1], xy_coords[2], xy_coords[3]], outline=tuple(color))
-            if box.shape[0] == 6:
-                text = '{} {:.1f}%'.format(class_names[class_], confidence * 100)
-            else:
-                text = '{}'.format(class_names[class_])
-            text_size = draw.textsize(text, font=font)
-            draw.rectangle(
-                [x0_coord, y0_coord - text_size[1], x0_coord + text_size[0], y0_coord],
-                fill=tuple(color))
-            draw.text((x0_coord, y0_coord - text_size[1]), text, fill='white',
-                      font=font)
-    else:
-        raise TypeError('unsupported type of boxes %s' % type(boxes))
+    for cls in range(boxes.shape[0]):
+        box = boxes[cls]
+        color = colors[int(box[0])]
+        class_ = int(box[0])
+        if box.shape[0] == 6:
+            xy_coords, confidence = box[1:5], box[5]
+        else:
+            xy_coords = box[1:5]
+        xy_coords = np.asarray([xy_coords[0], xy_coords[1], xy_coords[2], xy_coords[3]])
+        x0_coord, y0_coord = xy_coords[0], xy_coords[1]
+        thickness = (img.size[0] + img.size[1]) // 200
+        for tick in np.linspace(0, 1, thickness):
+            xy_coords[0], xy_coords[1] = xy_coords[0] + tick, xy_coords[1] + tick
+            xy_coords[2], xy_coords[3] = xy_coords[2] - tick, xy_coords[3] - tick
+            draw.rectangle([xy_coords[0], xy_coords[1], xy_coords[2], xy_coords[3]], outline=tuple(color))
+        if box.shape[0] == 6:
+            text = '{} {:.1f}%'.format(class_names[class_], confidence * 100)
+        else:
+            text = '{}'.format(class_names[class_])
+        text_size = draw.textsize(text, font=font)
+        draw.rectangle(
+            [x0_coord, y0_coord - text_size[1], x0_coord + text_size[0], y0_coord],
+            fill=tuple(color))
+        draw.text((x0_coord, y0_coord - text_size[1]), text, fill='white',
+                  font=font)
     img = img.convert('RGB')
     return img
 
-def generate_input_node_dict(node_name: str, data: np.ndarray) -> Dict[str, np.ndarray]:
-    return {node_name: data}
 
-
-def print_hi(name):
-    runner_descriptor = RunnerDescriptor(
-        graph_path=os.path.join(STORAGE_FROZEN_GRAPHS_DIR, 'yolo2_original_frozen.pb'),
+def print_hi():
+    runner_descriptor = Descriptor(
+        graph_path=os.path.join('./', 'yolo2.pb'),
         input_tensor_names=('input_1:0',),
         output_tensor_names=('conv_23/BiasAdd:0',),
     )
 
-    metric_descriptor = MetricDescriptor(
-        accuracy=0.36,
-        name='yolo2',
-        runner_descriptor=runner_descriptor,
-    )
-    network = Yolo2(metric_descriptor)
+    network = Yolo2(runner_descriptor)
 
-    runner = TFRunner(runner_descriptor)
     input_img = (Image.open(INPUT_IMAGE),)
 
-    sizes = get_img_sizes(input_img)
-
+    sizes = []
+    for image in input_img:
+        sizes.append(image.size)
     input_data = network.pre(input_img)
 
-    input_dict = generate_input_node_dict(network.runner_descriptor.input_tensor_names[0], input_data)
+    input_dict = {network.runner_descriptor.input_tensor_names[0]: input_data}
 
-    output = runner(input_dict)
+    output = network(input_dict)
     predictions = network.post(sizes, output)
 
     result = draw_boxes(input_img[0], predictions[0], None)
-    result.save(f"res_{1}.jpg")
+    result.save(f"res.jpg")
 
 
-# Press the green button in the gutter to run the script.
 if __name__ == '__main__':
-    print_hi('PyCharm')
-
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+    print_hi()
