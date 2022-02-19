@@ -8,5 +8,6 @@ setuptools.setup(
         'Pillow',
         'tensorflow==2.4.1',
         'pycocotools==2.0.1',
+        'PyQt5==5.15.6'
     ],
 )

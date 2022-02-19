@@ -2,13 +2,13 @@ import os
 from dataclasses import dataclass
 from typing import Tuple, Iterable, Any, Dict, List
 
-import cv2
 import numpy as np
 import tensorflow as tf
 import tensorflow.compat.v1 as tf_v1
 from PIL import Image
 from PIL import ImageDraw
 from PIL import ImageFont
+import tempfile
 
 input_hw_size = (608, 608)
 
@@ -31,9 +31,10 @@ COCO_CLASS_NAMES = [
     'sink', 'refrigerator', 'book', 'clock', 'vase',
     'scissors', 'teddy bear', 'hair drier', 'toothbrush']
 
-INPUT_IMAGE = './YHf7MEUm-O.jpg'
+INPUT_IMAGE = './index_1.jpg'
 # STORAGE_FROZEN_GRAPHS_DIR = './'
 TensorName = str
+
 
 @dataclass
 class Descriptor:
@@ -219,6 +220,7 @@ class Yolo2:
 
     @staticmethod
     def preprocess_yolo_common(data: Iterable[Image.Image], output_size: Tuple[int, int]) -> np.ndarray:
+        import cv2
         # channels = len(data[0].mode)
         channels = 3  # All Coco networks requires 3 channels
         result = np.ndarray((0, *output_size, channels), dtype=np.float32)
@@ -288,35 +290,10 @@ def draw_boxes(
     draw = ImageDraw.Draw(img)
     font = ImageFont.truetype(font=font,
                               size=(img.size[0] + img.size[1]) // 100)
-    # colors = get_spaced_colors(len(class_names))
     max_value = 255 ** 3
     interval = int(max_value / len(class_names))
     colors_ = [hex(ind)[2:].zfill(6) for ind in range(0, max_value, interval)]
     colors = [(int(color[:2], 16), int(color[2:4], 16), int(color[4:], 16)) for color in colors_]
-    if isinstance(boxes, dict):
-        for cls in list(boxes.keys()):
-            box_ = boxes[cls]
-            if np.shape(box_)[0] != 0:
-                box = box_[0]
-                color = colors[cls]
-                xy_coords, confidence = box[:4], box[4]
-                xy_coords = np.asarray([xy_coords[0], xy_coords[1], xy_coords[2], xy_coords[3]])
-                x0_coord, y0_coord = xy_coords[0], xy_coords[1]
-                thickness = (img.size[0] + img.size[1]) // 200
-                for tick in np.linspace(0, 1, thickness):
-                    xy_coords[0], xy_coords[1] = xy_coords[0] + tick, xy_coords[1] + tick
-                    xy_coords[2], xy_coords[3] = xy_coords[2] - tick, xy_coords[3] - tick
-                    draw.rectangle(xy_coords, outline=tuple(color))
-                text = '{} {:.1f}%'.format(class_names[cls],
-                                           confidence * 100)
-                text_size = draw.textsize(text, font=font)
-                draw.rectangle(
-                    [x0_coord, y0_coord - text_size[1], x0_coord + text_size[0], y0_coord],
-                    fill=tuple(color))
-                draw.text((x0_coord, y0_coord - text_size[1]), text, fill='black',
-                          font=font)
-    elif isinstance(boxes, np.ndarray):
-        confidence = 0
     for cls in range(boxes.shape[0]):
         box = boxes[cls]
         color = colors[int(box[0])]
@@ -346,7 +323,7 @@ def draw_boxes(
     return img
 
 
-def print_hi():
+def get_image(image_=INPUT_IMAGE) -> Image:
     runner_descriptor = Descriptor(
         graph_path=os.path.join('./', 'yolo2.pb'),
         input_tensor_names=('input_1:0',),
@@ -355,7 +332,7 @@ def print_hi():
 
     network = Yolo2(runner_descriptor)
 
-    input_img = (Image.open(INPUT_IMAGE),)
+    input_img = (Image.open(image_),)
 
     sizes = []
     for image in input_img:
@@ -368,8 +345,5 @@ def print_hi():
     predictions = network.post(sizes, output)
 
     result = draw_boxes(input_img[0], predictions[0], None)
-    result.save(f"res.jpg")
-
-
-if __name__ == '__main__':
-    print_hi()
+    # result.save(f"res.jpg")
+    return result
